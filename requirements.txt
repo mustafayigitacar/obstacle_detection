@@ -1,0 +1,17 @@
+# EdgeVision — bağımlılıklar
+# Mesafe tek kaynaktan gelir: Depth Anything V2 (metrik, iç mekan) ONNX modeli.
+# Bu nedenle onnxruntime ZORUNLUDUR; opsiyonel değildir.
+
+numpy>=1.24
+opencv-python>=4.8        # GUI'siz cihazda: opencv-python-headless (daha az RAM)
+PyYAML>=6.0
+
+# ONNX çalışma zamanı — platforma göre BİRİNİ kurun:
+onnxruntime>=1.17         # CPU (her yerde çalışır, yavaş)
+# onnxruntime-directml    # Windows + DirectX 12 GPU (dahili Intel/AMD dahil)
+# onnxruntime-gpu         # Jetson / NVIDIA CUDA
+#
+# config.yaml -> depth.providers hangi sağlayıcının deneneceğini belirler.
+
+# Model dosyası pip ile gelmez, elle indirilir:
+#   models/depth_anything_v2_metric_indoor.onnx   (~95 MB)

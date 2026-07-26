@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+captures/
+*.pdf
+node_modules/
+models/*.onnx

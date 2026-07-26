@@ -1,0 +1,70 @@
+# EdgeVision yapılandırması — metrik derinlik tabanlı, sadeleştirilmiş.
+# Mesafe doğrudan Depth Anything V2 (metrik) ağından gelir.
+
+camera:
+  source: 0
+  capture_width: 640
+  capture_height: 480
+  fps: 30
+  hfov_deg: 62.2          # yatay görüş açısı (yanal konum için); RPi Cam v2: 62.2
+
+processing:
+  proc_width: 320         # işleme genişliği (en-boy oranı korunur)
+  roi_top_ratio: 0.30     # bu satır oranının üstü taranmaz
+  column_stride: 2
+
+edge:
+  enabled: true           # kenar tespiti yalnızca görselleştirme/ürün için
+  canny_sigma: 0.33
+
+depth:
+  model: models/depth_anything_v2_metric_indoor.onnx
+  # 14'ün katı (ViT).
+  # NOT: 518 (modelin eğitildiği çözünürlük) ölçülen yakın/uzak ayrım gücünü
+  # 1.64x'ten 3.46x'e çıkarıyor AMA ham değerleri tamamen değiştirdiği için
+  # kalibrasyonun sıfırdan yapılmasını gerektirir. Denemek isterseniz: 518 yapıp
+  # pencerede `c` ile parçalı kalibrasyon (5cm/20cm/50cm/1m) yapın. Kalibrasyon
+  # yapmadan 518'e geçmeyin — mesafeler bozulur.
+  input_size: 210
+  # DirectML (GPU) varsa öncelikli; ana döngüyü bloke etmeden arka planda koşar
+  providers: [DmlExecutionProvider, CPUExecutionProvider]
+  threads: 4
+  median_ksize: 3         # hafif uzamsal median (tek-piksel gürültüsü); 0=kapalı
+  # Kalibrasyon: gercek_metre = calib_scale * ham + calib_offset
+  # Bu degerler input_size=210 icin gecerlidir. Cozunurlugu degistirirseniz ham
+  # degerler degisir ve bunlar gecersiz olur — yeniden kalibrasyon sart.
+  calib_scale: 0.514
+  calib_offset: -0.147
+  min_valid_m: 0.05       # en yakin (mercege degen) okuma bu degerden baslar
+  # PARCALI kalibrasyon [[ham, gercek], ...]. En az 2 nokta varsa afin yerine BU
+  # kullanilir. Model tepkisi dogrusal DEGIL (yakinda ham deger ~0.7-0.9'da
+  # sikisiyor, oda olceginde 4-5'e cikiyor); tek dogru 5cm ile 2m'yi ayni anda
+  # tutturamaz, tablo tutturur. Pencerede `c` tusuyla otomatik doldurulur.
+  calib_points: [[1.2223, 0.4500], [2.8640, 0.7000], [4.1078, 2.7000]]
+
+avoidance:
+  max_range_m: 5.0
+  warn_distance_m: 1.2
+  brake_distance_m: 0.6
+  stop_distance_m: 0.3
+  center_zone_deg: 12.0
+  min_gap_deg: 15.0
+  max_tracked_objects: 5  # yalnızca en yakın N küme "engel"; gerisi arka plan
+
+smoothing:
+  enabled: true
+  rise_persist_frames: 4  # uzaklaşma bu kadar kare tutarlı olmadan kabul edilmez
+
+# Zemin ayıklama: yer, sütun başına "en yakın yüzey" taramasını domine eder ve
+# her yerde sahte engel üretir (tüm sütunlar tek kümede birleşir). Düzlem
+# uydurulup çıkarılır; yalnızca yerden YÜKSELEN cisimler engel sayılır.
+ground:
+  enabled: true
+  # Zemin marjı MESAFEYLE ölçeklenir (gürültü uzakta büyür): marj = base + per_m*Z
+  margin_base_m: 0.06
+  margin_per_m: 0.09
+  min_inlier_ratio: 0.25  # bu orandan az iç-nokta varsa zemin sayma (fail-safe)
+  min_normal_y: 0.80      # normal bu kadar dikey değilse (duvar/tavan) uygulama
+  fit_step: 4
+  ema: 0.25
+  max_miss: 8             # kilit koptuktan sonra son düzlemi bu kadar kare tut (titreme önler)
