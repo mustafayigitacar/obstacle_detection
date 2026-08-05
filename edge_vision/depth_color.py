@@ -2,19 +2,12 @@
 
 from __future__ import annotations
 
-from typing import Tuple
-
 import cv2
 import numpy as np
 
 DN_LO, DN_HI = 22, 228
 DN_RED = 210
 RED_MAX_M = 0.40
-
-# applyColorMap'i 1x1 dizide çağırmak ~0.83 ms sürer; radar nokta başına
-# çağırınca kare başına ~131 ms yakıyordu. Tablo araması bunu bitirir.
-LUT = cv2.applyColorMap(np.arange(256, dtype=np.uint8).reshape(-1, 1),
-                        cv2.COLORMAP_TURBO).reshape(256, 3)
 
 
 def set_red_max(v: float) -> None:
@@ -39,15 +32,6 @@ def norm(z, near: float, far: float, red_max: float = None) -> np.ndarray:
 
 def colorize(depth_m: np.ndarray, near: float, far: float) -> np.ndarray:
     return cv2.applyColorMap(norm(depth_m, near, far), cv2.COLORMAP_TURBO)
-
-
-def colors_for(z, near: float, far: float) -> np.ndarray:
-    return LUT[norm(np.asarray(z, dtype=np.float32), near, far)]
-
-
-def color_at(z: float, near: float, far: float) -> Tuple[int, int, int]:
-    b, g, r = LUT[int(norm(np.array([[z]], dtype=np.float32), near, far)[0, 0])]
-    return int(b), int(g), int(r)
 
 
 def fmt(z: float) -> str:

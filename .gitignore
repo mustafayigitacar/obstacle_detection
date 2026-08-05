@@ -3,4 +3,16 @@ __pycache__/
 captures/
 *.pdf
 node_modules/
-models/*.onnx
+
+# Model agirliklari — depoya girmez, README'deki komutlarla uretilir.
+# Not: ultralytics disa aktarimi .pt ve .onnx dosyalarini PROJE KOKUNE birakir
+# (models/ altina degil), YOLOE ise ayrica ~242 MB'lik mobileclip .ts indirir.
+models/
+*.onnx
+*.pt
+*.ts
+*.task
+*.engine
+
+# Ultralytics tahmin/egitim ciktilari
+runs/

@@ -1,0 +1,11 @@
+# Depoda LF; calisma kopyasinda platformun kendi satir sonu kullanilir.
+# Boylece Windows/Linux arasinda "tum dosya degismis" gorunen diff'ler olusmaz.
+* text=auto eol=lf
+
+# Ikili dosyalar (gitignore'da olsalar da, yanlislikla eklenirlerse bozulmasin)
+*.onnx binary
+*.pt binary
+*.ts binary
+*.task binary
+*.png binary
+*.jpg binary

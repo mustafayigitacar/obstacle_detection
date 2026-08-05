@@ -1,4 +1,8 @@
-"""Depth Anything V2 (metrik, iç mekan) — sistemin TEK mesafe kaynağı.
+"""Metrik derinlik ağı — sistemin TEK mesafe kaynağı.
+
+İki motor desteklenir, `depth.backend` ile seçilir:
+    dav2   — Depth Anything V2 (kare girdi, ImageNet normalizasyonu)
+    yolo26 — YOLO26 derinlik (4:3 girdi, yalnızca /255)
 
 Model AYRI BİR ARKA PLAN İŞ PARÇACIĞINDA koşar; ana döngü onun son çıktısını
 bloke olmadan okur. 30 FPS'in anahtarı budur.
@@ -15,6 +19,7 @@ import numpy as np
 
 from . import depth_color
 from .config import DepthConfig
+from .utils import require_model
 
 _IMAGENET_MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32)
 _IMAGENET_STD = np.array([0.229, 0.224, 0.225], dtype=np.float32)
@@ -28,10 +33,19 @@ class MetricDepthNet:
         so.intra_op_num_threads = cfg.threads
         avail = set(ort.get_available_providers())
         providers = [p for p in cfg.providers if p in avail] or ["CPUExecutionProvider"]
-        self.session = ort.InferenceSession(cfg.model, so, providers=providers)
+        self.session = ort.InferenceSession(require_model(cfg.model), so,
+                                            providers=providers)
         self.active_provider = self.session.get_providers()[0]
         self.input_name = self.session.get_inputs()[0].name
-        self.size = int(round(cfg.input_size / 14.0) * 14)
+        self.backend = str(getattr(cfg, "backend", "dav2")).lower()
+        # YOLO26 sabit girdiyle aktarılır (boyut oturumdan); DA V2'de 14'ün katı.
+        shape = self.session.get_inputs()[0].shape
+        if self.backend == "yolo26" and isinstance(shape[-1], int):
+            self.in_hw = (int(shape[-2]), int(shape[-1]))
+            self.size = int(shape[-1])
+        else:
+            self.size = int(round(cfg.input_size / 14.0) * 14)
+            self.in_hw = (self.size, self.size)
 
         self.calib_scale = float(cfg.calib_scale)
         self.calib_offset = float(cfg.calib_offset)
@@ -93,11 +107,18 @@ class MetricDepthNet:
 
     def _infer(self, bgr_proc: np.ndarray):
         ph, pw = self._out_hw
-        inp = cv2.resize(bgr_proc, (self.size, self.size), interpolation=cv2.INTER_AREA)
+        ih, iw = self.in_hw
+        inp = cv2.resize(bgr_proc, (iw, ih), interpolation=cv2.INTER_AREA)
         rgb = cv2.cvtColor(inp, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
-        x = ((rgb - _IMAGENET_MEAN) / _IMAGENET_STD).transpose(2, 0, 1)[None].astype(np.float32)
+        if self.backend == "yolo26":
+            # Yalnızca /255 bekler; ImageNet normalizasyonu değerleri kaydırır.
+            x = np.ascontiguousarray(rgb.transpose(2, 0, 1)[None])
+        else:
+            x = ((rgb - _IMAGENET_MEAN) / _IMAGENET_STD).transpose(2, 0, 1)[None]
+        x = x.astype(np.float32)
         t0 = time.perf_counter()
-        out = self.session.run(None, {self.input_name: x})[0].squeeze().astype(np.float32)
+        out = self.session.run(None, {self.input_name: x})[0]
+        out = np.asarray(out).squeeze().astype(np.float32)
         self._infer_ms = (time.perf_counter() - t0) * 1000.0
 
         depth_raw = cv2.resize(out, (pw, ph), interpolation=cv2.INTER_LINEAR)

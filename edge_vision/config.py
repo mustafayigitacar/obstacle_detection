@@ -34,8 +34,11 @@ class EdgeConfig:
 
 @dataclass
 class DepthConfig:
+    # "dav2" (ImageNet normalizasyonu) | "yolo26" (yalnızca /255).
+    # Ham değerleri ortak DEĞİL: backend değişirse kalibrasyon geçersizdir.
+    backend: str = "dav2"
     model: str = "models/depth_anything_v2_metric_indoor.onnx"
-    input_size: int = 210
+    input_size: int = 518      # modelin yerleşik çözünürlüğü; düşürmek ayrım gücünü kırar
     providers: List[str] = field(
         default_factory=lambda: ["DmlExecutionProvider", "CPUExecutionProvider"])
     threads: int = 4
@@ -51,6 +54,76 @@ class DepthConfig:
     viz_red_max_m: float = 0.40
     viz_near_m: float = 0.05
     viz_far_m: float = 3.0
+
+
+@dataclass
+class YoloConfig:
+    enabled: bool = True
+    model: str = "models/yolo26n-seg.onnx"
+    input_size: int = 640      # model sabit boyutluysa oturumdan okunan değer kazanır
+    conf_thres: float = 0.35
+    iou_thres: float = 0.45
+    max_det: int = 20
+    # CPU: derinlik ağı DirectML'i tutuyor, ikinci bir DirectML oturumu çakışıyor.
+    providers: List[str] = field(default_factory=lambda: ["CPUExecutionProvider"])
+    threads: int = 12
+    # Açık sözlüklü model (YOLOE) için sınıf adları; sıra modeldekiyle AYNI
+    # olmalı. Boşsa COCO listesi kullanılır.
+    classes: List[str] = field(default_factory=list)
+
+
+@dataclass
+class StabilizeConfig:
+    """Küresel ölçek çapası: model sahne değişince tüm haritayı ölçekliyor."""
+    scale_anchor: bool = True
+    ref_pct: int = 85          # "uzak arka plan" olarak alınan yüzdelik
+    warmup_frames: int = 20    # referans bu kadar kare sonra kilitlenir
+    anchor_min: float = 0.30   # düzeltme katsayısı bu aralığın dışına çıkamaz
+    anchor_max: float = 3.00
+    anchor_ema: float = 0.25   # ani sıçrama yerine yumuşak düzeltme
+
+
+@dataclass
+class HandConfig:
+    """El tanima (MediaPipe). COCO'da "el" sinifi yok; bu katman onu ekler."""
+    enabled: bool = True
+    model: str = "models/hand_landmarker.task"
+    num_hands: int = 2
+    conf_thres: float = 0.5
+    box_pad: float = 0.12      # eklem noktalari eti kapsamaz, kutu genisletilir
+
+
+@dataclass
+class CalibConfig:
+    """Kalibrasyon hedef seçimi ve ölçüm hassasiyeti."""
+    # Bu orandan küçük kutularda güvenilir medyan alacak piksel kalmıyor.
+    min_target_area_frac: float = 0.02
+    # Nişan kutusu (manuel kip): COCO'da olmayan cisimler — kapı, duvar, karton
+    aim_frac: float = 0.28
+    aim_min: float = 0.10
+    aim_max: float = 0.90
+    aim_step: float = 0.04
+
+    capture_frames: int = 16    # medyanın standart hatası ~ σ/√n
+    grow_log_tol: float = 0.30  # bölge büyütme adım eşiği (log = oransal)
+    band_tol: float = 0.13      # yedek bant yöntemi için derinlik bandı (±%)
+    stability_tol: float = 0.17  # sapma bu oranı aşarsa nokta reddedilir
+
+
+@dataclass
+class TrackConfig:
+    """Tespit izleme: etiket titremesini ve mesafe oynamasını keser."""
+    enabled: bool = True
+    vote_frames: int = 15      # etiket son N karenin çoğunluğu (~0.75 s @20fps)
+    min_hits: int = 3          # bu kadar kare görülmeden ekrana gelmez
+    max_miss: int = 5          # kısa kayboluşta iz silinmez
+    iou_match: float = 0.30    # eşleme eşiği
+    switch_ratio: float = 1.5  # etiket değişimi için gereken oy üstünlüğü
+    box_ema: float = 0.5       # kutu yumuşatma
+    # Mesafe ölü bandı: cisim dururken okuma sabit, hareket edince hızlı takip
+    deadband_m: float = 0.06
+    alpha_still: float = 0.12
+    alpha_move: float = 0.60
 
 
 @dataclass
@@ -88,6 +161,11 @@ class AppConfig:
     processing: ProcessingConfig = field(default_factory=ProcessingConfig)
     edge: EdgeConfig = field(default_factory=EdgeConfig)
     depth: DepthConfig = field(default_factory=DepthConfig)
+    yolo: YoloConfig = field(default_factory=YoloConfig)
+    tracking: TrackConfig = field(default_factory=TrackConfig)
+    stabilize: StabilizeConfig = field(default_factory=StabilizeConfig)
+    hand: HandConfig = field(default_factory=HandConfig)
+    calib: CalibConfig = field(default_factory=CalibConfig)
     avoidance: AvoidanceConfig = field(default_factory=AvoidanceConfig)
     smoothing: SmoothingConfig = field(default_factory=SmoothingConfig)
     ground: GroundConfig = field(default_factory=GroundConfig)
@@ -107,6 +185,11 @@ def load_config(path: Union[str, Path, None] = None) -> AppConfig:
         processing=_build(ProcessingConfig, raw.get("processing")),
         edge=_build(EdgeConfig, raw.get("edge")),
         depth=_build(DepthConfig, raw.get("depth")),
+        yolo=_build(YoloConfig, raw.get("yolo")),
+        tracking=_build(TrackConfig, raw.get("tracking")),
+        stabilize=_build(StabilizeConfig, raw.get("stabilize")),
+        hand=_build(HandConfig, raw.get("hand")),
+        calib=_build(CalibConfig, raw.get("calib")),
         avoidance=_build(AvoidanceConfig, raw.get("avoidance")),
         smoothing=_build(SmoothingConfig, raw.get("smoothing")),
         ground=_build(GroundConfig, raw.get("ground")),

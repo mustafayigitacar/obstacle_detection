@@ -11,6 +11,7 @@ import numpy as np
 
 from .config import AvoidanceConfig, ProcessingConfig
 from .intrinsics import Intrinsics
+from .object_detector import Detection
 
 
 @dataclass(frozen=True)
@@ -45,6 +46,9 @@ class ObstacleReport:
     scan_bearing_deg: Optional[np.ndarray] = None
     scan_z: Optional[np.ndarray] = None
     scan_u: Optional[np.ndarray] = None
+    # Tanıma katmanı: engel "bir şey var" der, bu "ne olduğunu" söyler.
+    detections: List[Detection] = field(default_factory=list)
+    nearest_named: Optional[Detection] = None
 
     def to_dict(self) -> dict:
         return {
@@ -52,6 +56,8 @@ class ObstacleReport:
             "timestamp": self.timestamp,
             "obstacles": [o.to_dict() for o in self.obstacles],
             "nearest": self.nearest.to_dict() if self.nearest else None,
+            "detections": [d.to_dict() for d in self.detections],
+            "nearest_named": self.nearest_named.to_dict() if self.nearest_named else None,
         }
 
 

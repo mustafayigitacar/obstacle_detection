@@ -4,6 +4,7 @@ from .config import AppConfig, load_config
 from .pipeline import VisionPipeline
 from .camera import ThreadedCamera
 from .obstacles import Obstacle, ObstacleReport
+from .object_detector import Detection
 from .avoidance import AvoidanceCommand
 
 __version__ = "1.0.0"
@@ -15,5 +16,6 @@ __all__ = [
     "ThreadedCamera",
     "Obstacle",
     "ObstacleReport",
+    "Detection",
     "AvoidanceCommand",
 ]

@@ -13,5 +13,27 @@ onnxruntime>=1.17         # CPU (her yerde çalışır, yavaş)
 #
 # config.yaml -> depth.providers hangi sağlayıcının deneneceğini belirler.
 
-# Model dosyası pip ile gelmez, elle indirilir:
-#   models/depth_anything_v2_metric_indoor.onnx   (~95 MB)
+# OPSIYONEL — el tanima (COCO'da "el" sinifi yok):
+# mediapipe>=0.10          # kurulu degilse el katmani sessizce kapanir
+#
+# Model dosyaları pip ile gelmez, models/ altina elle konur:
+#   depth_anything_v2_metric_indoor.onnx  (~95 MB)  mesafe (backend: dav2)
+#   yolo26n-depth.onnx                    (~21 MB)  mesafe (backend: yolo26)
+#   yolo26n-seg.onnx                      (~11 MB)  tanima + MASKE  [varsayilan]
+#   yoloe-26n-seg.onnx                    (~11 MB)  acik sozluk (kapi, duvar...)
+#   yolo11n.onnx                          (~10 MB)  tanima, yalniz kutu (eski)
+#   hand_landmarker.task                  (~7.5 MB) el tanima (MediaPipe)
+#
+# Hepsini tek komutla hazirlamak icin:  python setup_models.py
+#
+# Disa aktarim ultralytics gerektirir, CALISMA ZAMANINDA GEREKMEZ:
+#   pip install ultralytics            # depth gorevi icin >= 8.4.115
+#   yolo export model=yolo26n-seg.pt   format=onnx imgsz=640     opset=12
+#   yolo export model=yolo26n-depth.pt format=onnx imgsz=480,640 opset=12
+#   # YOLOE sozlugu Python'dan gomulur:
+#   #   m = YOLOE("yoloe-26n-seg.pt"); m.set_classes(L, m.get_text_pe(L))
+#   #   m.export(format="onnx", imgsz=640, opset=12)
+#
+# NOT: yolo26n-depth 4:3 (480x640) aktarilir. Kare letterbox ile aktarilirsa gri
+# dolgu modelin sahne yorumunu degistirir ve degerler kayar (olculdu: p50 1.82 ->
+# 2.46). Ultralytics tek goruntude dikdortgen cikarim yapar; ONNX de oyle olmali.

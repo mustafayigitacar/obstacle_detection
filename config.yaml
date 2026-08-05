@@ -1,5 +1,5 @@
-# EdgeVision yapılandırması — metrik derinlik tabanlı, sadeleştirilmiş.
-# Mesafe doğrudan Depth Anything V2 (metrik) ağından gelir.
+# EdgeVision yapılandırması — metrik derinlik + nesne tanıma.
+# Mesafe derinlik ağından, ad/maske YOLO'dan gelir.
 
 camera:
   source: 0
@@ -18,29 +18,110 @@ edge:
   canny_sigma: 0.33
 
 depth:
+  # Iki motor secilebilir; ayrintili karsilastirma README'de.
+  #   dav2   : Depth Anything V2 (518)      40 ms, daha genis dinamik aralik
+  #   yolo26 : yolo26n-depth (480x640)     6.6 ms, dogrudan metre
+  # HAM DEGERLERI ORTAK DEGIL: backend degisirse calib_points GECERSIZDIR.
+  # yolo26'ya gecis: backend/model degistir + calib_points: [] +
+  #                  calib_scale: 1.0 + calib_offset: 0.0
+  backend: dav2
   model: models/depth_anything_v2_metric_indoor.onnx
-  # 14'ün katı (ViT).
-  # NOT: 518 (modelin eğitildiği çözünürlük) ölçülen yakın/uzak ayrım gücünü
-  # 1.64x'ten 3.46x'e çıkarıyor AMA ham değerleri tamamen değiştirdiği için
-  # kalibrasyonun sıfırdan yapılmasını gerektirir. Denemek isterseniz: 518 yapıp
-  # pencerede `c` ile parçalı kalibrasyon (5cm/20cm/50cm/1m) yapın. Kalibrasyon
-  # yapmadan 518'e geçmeyin — mesafeler bozulur.
-  input_size: 210
+  # 14'un kati (ViT); 518 modelin egitildigi cozunurluk. Olculdu (ayrim gucu):
+  #   210 -> 1.43x (32 ms)   322 -> 2.00x (59 ms)   518 -> 2.26x (40 ms)
+  input_size: 518
   # DirectML (GPU) varsa öncelikli; ana döngüyü bloke etmeden arka planda koşar
   providers: [DmlExecutionProvider, CPUExecutionProvider]
   threads: 4
   median_ksize: 3         # hafif uzamsal median (tek-piksel gürültüsü); 0=kapalı
   # Kalibrasyon: gercek_metre = calib_scale * ham + calib_offset
-  # Bu degerler input_size=210 icin gecerlidir. Cozunurlugu degistirirseniz ham
-  # degerler degisir ve bunlar gecersiz olur — yeniden kalibrasyon sart.
+  # KABA baslangic degeri. Gercek kalibrasyon pencerede `c` ile yapilir.
   calib_scale: 0.514
   calib_offset: -0.147
   min_valid_m: 0.05       # en yakin (mercege degen) okuma bu degerden baslar
-  # PARCALI kalibrasyon [[ham, gercek], ...]. En az 2 nokta varsa afin yerine BU
-  # kullanilir. Model tepkisi dogrusal DEGIL (yakinda ham deger ~0.7-0.9'da
-  # sikisiyor, oda olceginde 4-5'e cikiyor); tek dogru 5cm ile 2m'yi ayni anda
-  # tutturamaz, tablo tutturur. Pencerede `c` tusuyla otomatik doldurulur.
-  calib_points: [[1.2223, 0.4500], [2.8640, 0.7000], [4.1078, 2.7000]]
+  # PARCALI kalibrasyon [[ham, gercek], ...]; >=2 nokta varsa afin yerine BU
+  # kullanilir. Model tepkisi dogrusal degil, tek dogru yakin ve uzagi ayni anda
+  # tutturamaz. Pencerede `c` tusuyla doldurulur.
+  calib_points: [[0.4075, 0.1000], [1.0039, 0.4000], [1.5530, 1.5000]]
+
+# Nesne tanima: derinlik agi "ne kadar uzakta" der, bu "NE oldugunu" soyler.
+# Ayri is parcaciginda kosar, ana donguyu bloke etmez.
+yolo:
+  enabled: true
+  # YOLO26 segmentasyon: uctan uca (NMS yok) + cismin maskesi. Kutu-only
+  # yolo11n.onnx da calisir; bicim oturumdan anlasilir.
+  model: models/yolo26n-seg.onnx
+  input_size: 640         # model sabit boyutlu dışa aktarıldıysa o değer kazanır
+  conf_thres: 0.35        # bu güvenin altındaki tespitler atılır
+  iou_thres: 0.45         # NMS örtüşme eşiği
+  max_det: 20
+  # CPU ZORUNLU: iki DirectML oturumu cakisiyor, GPU'yu derinlik agi tutuyor.
+  # Olculdu (yolo26n-seg): 4 th 92 ms | 8 th 62 ms | 12 th 53 ms
+  providers: [CPUExecutionProvider]
+  threads: 12
+  # Acik sozluklu model (YOLOE): COCO'da OLMAYAN siniflari (kapi, duvar,
+  # merdiven) metin komutuyla tanir. Kullanmak icin modeli degistirip
+  # `classes` listesini acin — sira disa aktarimdakiyle AYNI olmali.
+  #   model: models/yoloe-26n-seg.onnx
+  #   classes: [insan, kapi, pencere, duvar, merdiven, televizyon, sandalye,
+  #             koltuk, yemek masasi, sise, bardak, dizustu, sirt cantasi,
+  #             saksi bitkisi, buzdolabi, dolap]
+  classes: []
+
+# Tespit izleme: YOLO her kareyi BAGIMSIZ isler, iki sinifin skoru yakinsa
+# (bardak/insan) etiket kare kare ziplar. Ayni cismin izi tutulup son N karenin
+# COGUNLUK sinifi gosterilir — tek karelik yanlis tahmin cogunlugu deviremez.
+tracking:
+  enabled: true
+  vote_frames: 15         # ~0.75 s @ 20 fps
+  min_hits: 3             # bu kadar kare gorulmeden ekrana gelmez (hayalet kutu)
+  max_miss: 5             # kisa kayboluşta iz silinmez, kutu korunur
+  iou_match: 0.30
+  switch_ratio: 1.5       # etiket ancak yeni sinif mevcudu 1.5x gecerse degisir
+  box_ema: 0.5
+  # Mesafe olu bandi: cisim dururken okuma sabit, hareket edince hizli takip
+  deadband_m: 0.06
+  alpha_still: 0.12
+  alpha_move: 0.60
+
+# Kuresel olcek capasi. Model sahne degisince TUM haritayi yeniden olcekliyor:
+# olculdu, goruntunun HIC DEGISMEYEN yarisi %50 kaydi; capa bunu %15'e indiriyor.
+# Sahnenin uzak kismi gercekte sabit kaldigi icin referans olarak kullanilir.
+stabilize:
+  scale_anchor: true
+  ref_pct: 85             # "uzak arka plan" olarak alinan yuzdelik
+  warmup_frames: 20       # referans bu kadar kare sonra kilitlenir
+  anchor_min: 0.30        # duzeltme katsayisi bu araligin disina cikamaz
+  anchor_max: 3.00
+  anchor_ema: 0.25        # ani sicrama yerine yumusak duzeltme
+
+# El tanima (MediaPipe): COCO'da "el" sinifi yok, model eli "insan" sayiyor.
+# Acik sozluklu YOLOE ile de denendi, tutmadi: 503 karede "hand" icin en yuksek
+# guven 0.00 kaldi. MediaPipe ele ozel 21 eklem noktasi verir.
+# Opsiyoneldir: paket ya da model yoksa katman kapanir, sistem calismaya devam eder.
+#   pip install mediapipe
+hand:
+  enabled: true
+  model: models/hand_landmarker.task
+  num_hands: 2
+  conf_thres: 0.5
+  box_pad: 0.12           # eklem noktalari eti kapsamaz, kutu genisletilir
+
+# Kalibrasyon hedef secimi ve olcum hassasiyeti
+calib:
+  # Bu orandan kucuk kutular hedef sayilmaz (kapi kolu gibi cisimlerde guvenilir
+  # medyan alacak piksel kalmiyor); ekranda "kucuk" diye gosterilir.
+  min_target_area_frac: 0.02
+  # Nisan kutusu: COCO'da OLMAYAN cisimler icin; pencerede +/- ile boyutlanir.
+  aim_frac: 0.28
+  aim_min: 0.10
+  aim_max: 0.90
+  aim_step: 0.04
+  capture_frames: 16      # medyanin standart hatasi ~ sigma/sqrt(n)
+  # Bolge buyutme adim esigi (LOG derinlikte = ORANSAL): cismi bir arada tutar.
+  # Buyutursen cisim arka planla birlesir, kucultursen cisim parcalanir.
+  grow_log_tol: 0.30
+  band_tol: 0.13          # yedek bant yontemi (buyume tutmazsa)
+  stability_tol: 0.17     # olcum sapmasi bu orani asarsa nokta reddedilir
 
 avoidance:
   max_range_m: 5.0

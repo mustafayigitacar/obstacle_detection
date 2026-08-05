@@ -6,7 +6,8 @@
     python main.py --headless        # pencere yok, konsola 1 Hz durum
 
 Pencerede: q=çıkış, s=kare kaydet, d=sağ panel, c=kalibrasyon, tıklama=mesafe.
-Kalibrasyonda: rakam/nokta=mesafe, ENTER=kaydet, f=uygula, x=sil, r=geri al.
+Kalibrasyonda: n=sonraki nesne, m=nişan kutusu, +/-=kutu boyutu,
+rakam/nokta=mesafe, ENTER=kaydet, f=uygula, x=sil, r=geri al.
 """
 
 from __future__ import annotations
@@ -51,7 +52,7 @@ def main() -> int:
         import cv2
         from edge_vision.viz import compose_view
         from edge_vision.calib_overlay import CalibOverlay
-        calib = CalibOverlay(args.config, pipeline.depth)
+        calib = CalibOverlay(args.config, pipeline.depth, cfg.calib)
         cv2.namedWindow(win, cv2.WINDOW_AUTOSIZE)
         cv2.moveWindow(win, 40, 40)
         cv2.setWindowProperty(win, cv2.WND_PROP_TOPMOST, 1)
@@ -103,19 +104,28 @@ def main() -> int:
                         last_status = now
                         n = report.nearest
                         eng = "yok" if n is None else f"{n.distance_m:.2f}m @ {n.bearing_deg:+.0f}"
+                        nn = report.nearest_named
+                        nes = "yok" if nn is None else f"{nn.label} {nn.distance_m:.2f}m"
                         d = dbg["depth"]
-                        print(f"[{command.action:9s}] engel={eng:18s} fps={dbg['fps']:.1f} "
-                              f"derinlik={d.update_rate:.0f}fps({d.infer_ms:.0f}ms)", flush=True)
+                        y = dbg["yolo"]
+                        ytxt = "" if y is None else \
+                            f" yolo={y.update_rate:.0f}fps({y.infer_ms:.0f}ms)"
+                        print(f"[{command.action:9s}] engel={eng:18s} nesne={nes:20s} "
+                              f"fps={dbg['fps']:.1f} "
+                              f"derinlik={d.update_rate:.0f}fps({d.infer_ms:.0f}ms){ytxt}",
+                              flush=True)
 
                 if display:
                     if calib.active:
-                        calib.update(dbg["depth_m"], pipeline.depth.get_raw_depth())
+                        calib.update(dbg["depth_m"], pipeline.depth.get_raw_depth(),
+                                     report.detections, dbg["ground_mask"])
                     view = compose_view(dbg["proc"], dbg["edges"], report, command,
                                         dbg["roi_top"], dbg["fps"], scale=args.scale,
                                         depth=dbg["depth"], depth_m=dbg["depth_m"],
                                         right_panel=right_panel,
                                         max_range_m=cfg.avoidance.max_range_m,
-                                        show_obstacles=not calib.active)
+                                        show_obstacles=not calib.active,
+                                        yolo=dbg["yolo"])
                     if probe["uv"] is not None and time.time() - probe["at"] < 5.0:
                         pu, pv = probe["uv"]
                         txt = "derinlik yok"

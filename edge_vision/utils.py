@@ -1,9 +1,27 @@
-"""Üstel hareketli ortalama ve FPS sayacı."""
+"""Küçük yardımcılar: model dosyası kontrolü, EMA, FPS sayacı."""
 
 from __future__ import annotations
 
 import time
+from pathlib import Path
 from typing import Optional
+
+
+def require_model(path: str) -> str:
+    """Model dosyası yoksa ne yapılacağını SÖYLEYEN hata verir.
+
+    Model dosyaları depoya girmez, dolayısıyla taze bir klonda yokturlar;
+    ONNX Runtime'in ham `NO_SUCHFILE` hatası ise ne yapılacağını anlatmaz.
+    """
+    if Path(path).exists():
+        return path
+    raise FileNotFoundError(
+        f"Model dosyasi yok: {path}\n"
+        f"Model dosyalari depoya girmez (.gitignore). Uretmek icin:\n"
+        f"    pip install ultralytics\n"
+        f"    python setup_models.py\n"
+        f"Ayrintilar: README 'Kurulum' bolumu."
+    )
 
 
 class EMA:
