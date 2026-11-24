@@ -9,6 +9,10 @@ from typing import List, Union
 
 import yaml
 
+from .log import get_logger
+
+log = get_logger(__name__)
+
 
 @dataclass
 class CameraConfig:
@@ -43,6 +47,9 @@ class DepthConfig:
         default_factory=lambda: ["DmlExecutionProvider", "CPUExecutionProvider"])
     threads: int = 4
     median_ksize: int = 3
+    # Güvenlik: harita bu kadar saniyedir yenilenmediyse (ağ takıldı/çöktü)
+    # kaçınma komutu STOP'a zorlanır. 0 = kapalı.
+    max_age_s: float = 1.0
 
     # --- Kalibrasyon: ham model metresi -> gerçek metre ---
     calib_scale: float = 0.514
@@ -203,28 +210,46 @@ class AppConfig:
     logging: LoggingConfig = field(default_factory=LoggingConfig)
 
 
-def _build(cls, data: dict):
+_SECTIONS = {f.name for f in dataclasses.fields(AppConfig)}
+
+
+def _build(cls, data: dict, section: str = ""):
+    """Bilinmeyen anahtarlar atılır AMA uyarılır: yazım hatası (ör. `trheads`)
+    sessizce varsayılana düşüp saatlerce aranan bir davranış farkı yaratıyordu."""
+    if data is not None and not isinstance(data, dict):
+        log.warning("config: '%s' bolumu sozluk olmali, varsayilan kullaniliyor", section)
+        data = None
     known = {f.name for f in dataclasses.fields(cls)}
-    return cls(**{k: v for k, v in (data or {}).items() if k in known})
+    data = data or {}
+    unknown = sorted(k for k in data if k not in known)
+    if unknown:
+        log.warning("config: '%s' bolumunde bilinmeyen anahtar(lar) yok sayildi: %s",
+                    section, ", ".join(map(str, unknown)))
+    return cls(**{k: v for k, v in data.items() if k in known})
 
 
 def load_config(path: Union[str, Path, None] = None) -> AppConfig:
     if path is None:
         return AppConfig()
     raw = yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
+    if not isinstance(raw, dict):
+        raise ValueError(f"{path}: en ust duzey YAML bir sozluk olmali")
+    extra = sorted(str(k) for k in raw if k not in _SECTIONS)
+    if extra:
+        log.warning("config: bilinmeyen bolum(ler) yok sayildi: %s", ", ".join(extra))
     return AppConfig(
-        camera=_build(CameraConfig, raw.get("camera")),
-        processing=_build(ProcessingConfig, raw.get("processing")),
-        edge=_build(EdgeConfig, raw.get("edge")),
-        depth=_build(DepthConfig, raw.get("depth")),
-        yolo=_build(YoloConfig, raw.get("yolo")),
-        tracking=_build(TrackConfig, raw.get("tracking")),
-        stabilize=_build(StabilizeConfig, raw.get("stabilize")),
-        hand=_build(HandConfig, raw.get("hand")),
-        calib=_build(CalibConfig, raw.get("calib")),
-        avoidance=_build(AvoidanceConfig, raw.get("avoidance")),
-        smoothing=_build(SmoothingConfig, raw.get("smoothing")),
-        ground=_build(GroundConfig, raw.get("ground")),
-        scene=_build(SceneConfig, raw.get("scene")),
-        logging=_build(LoggingConfig, raw.get("logging")),
+        camera=_build(CameraConfig, raw.get("camera"), "camera"),
+        processing=_build(ProcessingConfig, raw.get("processing"), "processing"),
+        edge=_build(EdgeConfig, raw.get("edge"), "edge"),
+        depth=_build(DepthConfig, raw.get("depth"), "depth"),
+        yolo=_build(YoloConfig, raw.get("yolo"), "yolo"),
+        tracking=_build(TrackConfig, raw.get("tracking"), "tracking"),
+        stabilize=_build(StabilizeConfig, raw.get("stabilize"), "stabilize"),
+        hand=_build(HandConfig, raw.get("hand"), "hand"),
+        calib=_build(CalibConfig, raw.get("calib"), "calib"),
+        avoidance=_build(AvoidanceConfig, raw.get("avoidance"), "avoidance"),
+        smoothing=_build(SmoothingConfig, raw.get("smoothing"), "smoothing"),
+        ground=_build(GroundConfig, raw.get("ground"), "ground"),
+        scene=_build(SceneConfig, raw.get("scene"), "scene"),
+        logging=_build(LoggingConfig, raw.get("logging"), "logging"),
     )

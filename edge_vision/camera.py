@@ -5,10 +5,15 @@ from __future__ import annotations
 import os
 import sys
 import threading
+import time
 from typing import Optional, Tuple, Union
 
 import cv2
 import numpy as np
+
+from .log import get_logger
+
+log = get_logger(__name__)
 
 
 def _open_capture(source: Union[int, str]) -> cv2.VideoCapture:
@@ -23,6 +28,8 @@ def _open_capture(source: Union[int, str]) -> cv2.VideoCapture:
 
 class ThreadedCamera:
     def __init__(self, source: Union[int, str], width: int, height: int, fps: int):
+        # Yerel video dosyası senkron okunur (kare atlanmaz, sonu = akışın sonu).
+        # URL/RTSP akışı ise canlı kamera gibi davranır.
         self._sync = isinstance(source, str) and os.path.isfile(source)
         self.cap = _open_capture(source)
         if not self.cap.isOpened():
@@ -38,6 +45,18 @@ class ThreadedCamera:
         self._frame_id = 0
         self._stopped = False
         self._thread: Optional[threading.Thread] = None
+        self._fails = 0
+        self._last_ok = time.perf_counter()
+
+    @property
+    def is_file(self) -> bool:
+        """Kaynak sonlu bir video dosyası mı (None kare = akışın sonu)."""
+        return self._sync
+
+    @property
+    def age_s(self) -> float:
+        """Son başarılı karenin yaşı (sn): canlı kamerada kopma tespiti için."""
+        return time.perf_counter() - self._last_ok
 
     def start(self) -> "ThreadedCamera":
         if not self._sync:
@@ -49,7 +68,18 @@ class ThreadedCamera:
         while not self._stopped:
             ok, frame = self.cap.read()
             if not ok:
+                # Kamera koptuysa read() anında döner: beklemeden döngü
+                # bir çekirdeği %100 yakıyordu.
+                self._fails += 1
+                if self._fails in (1, 30) or self._fails % 300 == 0:
+                    log.warning("kamera: kare okunamadi (%d ardisik)", self._fails)
+                time.sleep(0.01 if self._fails < 30 else 0.1)
                 continue
+            if self._fails:
+                log.info("kamera: akis geri geldi (%d basarisiz okumadan sonra)",
+                         self._fails)
+                self._fails = 0
+            self._last_ok = time.perf_counter()
             with self._lock:
                 self._frame = frame
                 self._frame_id += 1
@@ -60,6 +90,7 @@ class ThreadedCamera:
             if not ok:
                 return self._frame_id, None
             self._frame_id += 1
+            self._last_ok = time.perf_counter()
             return self._frame_id, frame
         with self._lock:
             if self._frame is None:

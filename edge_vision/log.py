@@ -96,7 +96,8 @@ class Telemetry:
             d = Path(getattr(cfg, "dir", "logs") or "logs")
             d.mkdir(parents=True, exist_ok=True)
             self.path = d / f"telemetry_{time.strftime('%Y%m%d_%H%M%S')}.jsonl"
-            self._fh = self.path.open("w", encoding="utf-8")
+            # Satır tamponlu: çökmede son kareler kaybolmasın (analizin asıl konusu).
+            self._fh = self.path.open("w", encoding="utf-8", buffering=1)
             get_logger("telemetry").info("telemetri: %s", self.path)
 
     def write(self, record: dict) -> None:

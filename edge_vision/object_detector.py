@@ -118,6 +118,7 @@ class YoloDetector:
         self._update_rate = 0.0
         self._last_pub = 0.0
         self._version = 0
+        self._errors = 0
 
     # --- arka plan iş parçacığı ---
 
@@ -142,7 +143,7 @@ class YoloDetector:
                 dets = self._infer(frame)
             except Exception:                               # noqa: BLE001
                 # Tek bir hatali kare is parcacigini oldurmesin (harita donardi).
-                self._errors = getattr(self, "_errors", 0) + 1
+                self._errors += 1
                 if self._errors <= 3 or self._errors % 100 == 0:
                     log.exception("yolo cikarimi basarisiz (#%d)", self._errors)
                 time.sleep(0.05)
@@ -467,7 +468,8 @@ class DetectionTracker:
                 tr.dist = dist
                 return dist
             if self.jump_log > 0 and abs(np.log(dist / max(tr.dist, 1e-3))) > self.jump_log:
-                if np.isfinite(tr.pend) and                         abs(np.log(dist / max(tr.pend, 1e-3))) <= self.jump_log * 0.5:
+                if (np.isfinite(tr.pend)
+                        and abs(np.log(dist / max(tr.pend, 1e-3))) <= self.jump_log * 0.5):
                     tr.pend_n += 1
                 else:
                     tr.pend_n = 1
