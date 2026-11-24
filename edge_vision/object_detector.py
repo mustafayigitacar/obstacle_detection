@@ -28,6 +28,7 @@ import cv2
 import numpy as np
 
 from .config import TrackConfig, YoloConfig
+from .log import get_logger
 from .utils import require_model
 
 # COCO 80 sınıfı, model çıktı sırasıyla (indeks = class_id).
@@ -45,6 +46,8 @@ COCO_TR = [
     "mikrodalga", "fırın", "ekmek kızartıcı", "lavabo", "buzdolabı", "kitap",
     "saat", "vazo", "makas", "oyuncak ayı", "saç kurutma", "diş fırçası",
 ]
+
+log = get_logger(__name__)
 
 
 @dataclass(frozen=True)
@@ -86,6 +89,7 @@ class YoloDetector:
         self.session = ort.InferenceSession(require_model(cfg.model), so,
                                             providers=providers)
         self.active_provider = self.session.get_providers()[0]
+        log.info("yolo modeli: %s  saglayici=%s", cfg.model, self.active_provider)
         inp = self.session.get_inputs()[0]
         self.input_name = inp.name
         # Model girdi boyutu SABİTSE (yolo11n dışa aktarımı 640x640) config'teki
@@ -134,7 +138,15 @@ class YoloDetector:
             if frame is None:
                 time.sleep(0.002)
                 continue
-            dets = self._infer(frame)
+            try:
+                dets = self._infer(frame)
+            except Exception:                               # noqa: BLE001
+                # Tek bir hatali kare is parcacigini oldurmesin (harita donardi).
+                self._errors = getattr(self, "_errors", 0) + 1
+                if self._errors <= 3 or self._errors % 100 == 0:
+                    log.exception("yolo cikarimi basarisiz (#%d)", self._errors)
+                time.sleep(0.05)
+                continue
             with self._lock:
                 self._dets = dets
                 self._version += 1
@@ -312,7 +324,7 @@ class _Track:
     """Kareler arası aynı cisim: kutu + sınıf oyları + yumuşatılmış mesafe."""
 
     __slots__ = ("tid", "box", "votes", "shown", "conf", "hits", "misses",
-                 "dist", "mask")
+                 "dist", "mask", "pend", "pend_n")
 
     def __init__(self, tid: int, det: Detection, vote_frames: int):
         self.tid = tid
@@ -323,6 +335,8 @@ class _Track:
         self.hits = 1
         self.misses = 0
         self.dist = float("inf")
+        self.pend = float("nan")    # sıçrama kapısında bekleyen aday mesafe
+        self.pend_n = 0
         # Maske yumuşatılmaz: ortalanabilir bir büyüklük değil.
         self.mask = det.mask
 
@@ -390,6 +404,9 @@ class DetectionTracker:
         self.deadband = float(cfg.deadband_m)
         self.a_still = float(cfg.alpha_still)
         self.a_move = float(cfg.alpha_move)
+        self.jump_log = float(np.log1p(max(0.0, float(cfg.jump_ratio))))
+        self.jump_persist = max(1, int(cfg.jump_persist))
+        self.strict = False       # sahne kararsızken pipeline açar
         self._tracks: List[_Track] = []
         self._next_id = 1
         self._names: dict = {}
@@ -431,18 +448,38 @@ class DetectionTracker:
         self._tracks = [t for t in self._tracks if t.misses <= self.max_miss]
 
     def set_distance(self, tid: int, dist: float) -> float:
-        """Ölü bantlı EMA: küçük oynamalar bastırılır, gerçek hareket geçer."""
+        """Ölü bantlı EMA + sıçrama kapısı.
+
+        Küçük oynamalar bastırılır, gerçek hareket geçer. Tek karelik BÜYÜK
+        sıçrama (model haritayı yeniden ölçekledi, ışık sıçradı) hemen kabul
+        edilmez: aday `jump_persist` kare boyunca tutarlı kalırsa gerçek
+        hareket sayılır ve doğrudan atanır. Sahne kararsızken (strict) kapı
+        iki kat sabırlıdır.
+        """
         for tr in self._tracks:
             if tr.tid != tid:
                 continue
             if not np.isfinite(dist):
                 tr.dist = dist
+                tr.pend, tr.pend_n = float("nan"), 0
                 return dist
             if not np.isfinite(tr.dist):
                 tr.dist = dist
-            else:
-                a = self.a_still if abs(dist - tr.dist) < self.deadband else self.a_move
-                tr.dist += a * (dist - tr.dist)
+                return dist
+            if self.jump_log > 0 and abs(np.log(dist / max(tr.dist, 1e-3))) > self.jump_log:
+                if np.isfinite(tr.pend) and                         abs(np.log(dist / max(tr.pend, 1e-3))) <= self.jump_log * 0.5:
+                    tr.pend_n += 1
+                else:
+                    tr.pend_n = 1
+                tr.pend = dist
+                need = self.jump_persist * (2 if self.strict else 1)
+                if tr.pend_n >= need:
+                    tr.dist = dist
+                    tr.pend, tr.pend_n = float("nan"), 0
+                return tr.dist
+            tr.pend, tr.pend_n = float("nan"), 0
+            a = self.a_still if abs(dist - tr.dist) < self.deadband else self.a_move
+            tr.dist += a * (dist - tr.dist)
             return tr.dist
         return dist
 

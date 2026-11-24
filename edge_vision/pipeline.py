@@ -20,9 +20,13 @@ from .ground import GroundRemover
 from .intrinsics import intrinsics_from_hfov
 from .metric_depth import MetricDepthNet
 from .hand_detector import HandDetector
+from .log import get_logger
 from .object_detector import DetectionTracker, YoloDetector, _iou, fuse_distance
 from .obstacles import ObstacleReport, ObstacleScanner
+from .stability import SceneMonitor, SceneState
 from .utils import FpsMeter
+
+log = get_logger(__name__)
 
 
 class ScaleAnchor:
@@ -43,9 +47,22 @@ class ScaleAnchor:
         self.lo = float(cfg.anchor_min)
         self.hi = float(cfg.anchor_max)
         self.ema = float(cfg.anchor_ema)
+        self.rebase_on_cut = bool(getattr(cfg, "rebase_on_cut", True))
         self.ref: Optional[float] = None
         self.k = 1.0
         self._seen = 0
+
+    def rebase(self) -> None:
+        """Sahne kesmesi: eski referans artık "uzak arka plan" değil.
+
+        Mevcut düzeltme korunur (harita sıçramasın); yeni sahnenin ölçülen
+        değeri, o düzeltmeyle aynı sonucu verecek şekilde referans alınır.
+        """
+        if not self.enabled or not self.rebase_on_cut:
+            return
+        self.ref = None
+        self._seen = 0
+        log.info("olcek capasi: sahne kesmesi, referans yeniden kuruluyor (k=%.2f)", self.k)
 
     def measure(self, raw: Optional[np.ndarray]) -> Optional[float]:
         if raw is None:
@@ -55,16 +72,20 @@ class ScaleAnchor:
             return None
         return float(np.percentile(v, self.pct))
 
-    def update(self, value: Optional[float]) -> float:
-        if not self.enabled or not value or value <= 1e-6:
+    def update(self, value: Optional[float], hold: bool = False) -> float:
+        """`hold`: sahne kararsız (ışık/bulanıklık) — ölçüm güvenilmez, k sabit."""
+        if not self.enabled or not value or value <= 1e-6 or hold:
             return self.k
         if self.ref is None:
             # Referans oturana kadar bekle: ilk kareler ağ ısınırken gürültülü.
             self._seen += 1
             if self._seen < self.warmup:
-                return 1.0
-            self.ref = value
-            return 1.0
+                return self.k
+            # Yeniden kurulumda mevcut k korunur: ref = ölçüm * k.
+            self.ref = value * self.k
+            log.info("olcek capasi: referans kilitlendi (p%d=%.3f, k=%.2f)",
+                     self.pct, self.ref, self.k)
+            return self.k
         target = float(np.clip(self.ref / value, self.lo, self.hi))
         self.k += self.ema * (target - self.k)
         return self.k
@@ -87,6 +108,11 @@ class VisionPipeline:
         self.hand = HandDetector.create(cfg.hand)
         self.tracker = DetectionTracker(cfg.tracking)
         self.anchor = ScaleAnchor(cfg.stabilize)
+        self.scene = SceneMonitor(cfg.scene)
+        self.scene_state = SceneState()
+        self._ground_locked = None
+        self._depth_med: Optional[float] = None
+        self._depth_jump = 0.0
         self._yolo_version = -1
         self._hand_version = -1
 
@@ -102,6 +128,9 @@ class VisionPipeline:
         self._ground_mask: Optional[np.ndarray] = None
 
     def start(self) -> "VisionPipeline":
+        log.info("hat basliyor: islem %dx%d, derinlik=%s (%s), yolo=%s, el=%s",
+                 self.pw, self.ph, self.cfg.depth.backend, self.depth.active_provider,
+                 "acik" if self.yolo else "kapali", "acik" if self.hand else "kapali")
         self.depth.start((self.ph, self.pw))
         if self.yolo is not None:
             self.yolo.start()
@@ -122,6 +151,12 @@ class VisionPipeline:
             self._proc_buf = np.empty((self.ph, self.pw, 3), dtype=np.uint8)
         proc = cv2.resize(frame_bgr, (self.pw, self.ph),
                           dst=self._proc_buf, interpolation=cv2.INTER_AREA)
+
+        st = self.scene_state = self.scene.update(proc)
+        if st.cut:
+            self.anchor.rebase()
+        if self.tracker.enabled:
+            self.tracker.strict = not st.stable
 
         self.depth.submit(proc)
         if self.yolo is not None:
@@ -161,13 +196,19 @@ class VisionPipeline:
         if depth_new or self._ground_mask is None:
             self.ground.update(depth_m, roi_top)
             self._ground_mask = self.ground.ground_mask(depth_m, roi_top)
+            if self.ground.locked != self._ground_locked:
+                if self._ground_locked is not None:
+                    log.info("zemin: %s", "kilitlendi" if self.ground.locked else "kilit koptu")
+                self._ground_locked = self.ground.locked
         ground_mask = self._ground_mask
 
         # Ölçek çapası: harita global olarak kaydıysa geri getir. HAM değerden
         # ölçülür (kalibrasyondan bağımsız referans). Maske ölçeklemeye bağışık
         # olduğu için maskeden sonra uygulanır, yeniden hesap gerekmez.
         if depth_new:
-            self.anchor.update(self.anchor.measure(self.depth.get_raw_depth()))
+            raw = self.depth.get_raw_depth()
+            self._track_depth_jump(raw)
+            self.anchor.update(self.anchor.measure(raw), hold=not st.stable)
         if abs(self.anchor.k - 1.0) > 1e-3:
             depth_m = (depth_m * self.anchor.k).astype(np.float32)
 
@@ -202,6 +243,53 @@ class VisionPipeline:
         )
         command = self.planner.plan(report)
         return report, command, self._debug(proc, edges, depth_m, roi_top)
+
+    def _track_depth_jump(self, raw: Optional[np.ndarray]) -> None:
+        """Ham haritanın küresel medyanındaki kareden kareye log-sıçrama.
+
+        Görüntü sakinken bu büyükse model haritayı yeniden ölçeklemiştir —
+        çapanın düzelttiği durum. Telemetriye girer, büyükse loglanır.
+        """
+        if raw is None:
+            return
+        v = raw[raw > 1e-3]
+        if v.size < 500:
+            return
+        med = float(np.median(v))
+        if self._depth_med is not None and self._depth_med > 1e-6:
+            self._depth_jump = float(np.log(med / self._depth_med))
+            if abs(self._depth_jump) > 0.25:
+                log.debug("derinlik: kuresel olcek sicramasi %+.0f%% (sahne %s)",
+                          100 * (np.exp(self._depth_jump) - 1),
+                          "kararli" if self.scene_state.stable else
+                          ",".join(self.scene_state.events) or "oturuyor")
+        self._depth_med = med
+
+    def telemetry_record(self, report: ObstacleReport, command: AvoidanceCommand,
+                         fps: float) -> dict:
+        """Kare başına tek satırlık analiz/ML kaydı (bkz. log.Telemetry)."""
+        def num(x):
+            return None if x is None or not np.isfinite(x) else round(float(x), 4)
+        st = self.scene_state
+        n, nn = report.nearest, report.nearest_named
+        return {
+            "frame": report.frame_id,
+            "fps": round(fps, 1),
+            "action": command.action,
+            "stable": st.stable,
+            "events": st.events,
+            **{k: num(v) for k, v in st.features.items()},
+            "depth_med_raw": num(self._depth_med),
+            "depth_jump_log": num(self._depth_jump),
+            "anchor_k": num(self.anchor.k),
+            "anchor_ref": num(self.anchor.ref),
+            "ground": bool(self.ground.locked),
+            "nearest_m": num(n.distance_m) if n else None,
+            "nearest_deg": num(n.bearing_deg) if n else None,
+            "named": nn.label if nn else None,
+            "named_m": num(nn.distance_m) if nn else None,
+            "n_det": len(report.detections),
+        }
 
     def _merge(self):
         """YOLO + el tespitlerini birleştirir; el, kendi bölgesindeki "insan"ın
@@ -256,6 +344,7 @@ class VisionPipeline:
             "ground_locked": self.ground.locked,
             "ground_mask": self._ground_mask,
             "scale_k": self.anchor.k,
+            "scene": self.scene_state,
             "yolo": self.yolo,
             "hand": self.hand,
             "fps": self._fps.tick(),

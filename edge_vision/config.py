@@ -81,6 +81,32 @@ class StabilizeConfig:
     anchor_min: float = 0.30   # düzeltme katsayısı bu aralığın dışına çıkamaz
     anchor_max: float = 3.00
     anchor_ema: float = 0.25   # ani sıçrama yerine yumuşak düzeltme
+    rebase_on_cut: bool = True  # sahne kesmesinde referansı yeni sahneye göre kur
+
+
+@dataclass
+class SceneConfig:
+    """Ani değişim algılama (ışık / bulanıklık / sarsıntı / sahne kesmesi)."""
+    enabled: bool = True
+    light_jump: float = 0.15   # kareden kareye bağıl parlaklık sıçraması
+    blur_ratio: float = 0.50   # keskinlik öğrenilen ortalamanın bu oranına düşerse
+    cut_corr: float = 0.50     # yapısal benzerlik (NCC) bunun altı = farklı sahne
+    cut_persist: int = 6       # yeni sahne bu kadar kare tutarlı kalmalı
+    z_max: float = 4.0         # öğrenilen dağılıma göre anomali eşiği
+    learn_rate: float = 0.02   # çevrimiçi istatistik öğrenme hızı
+    settle_frames: int = 5     # olaydan sonra bu kadar kare "kararsız" sayılır
+
+
+@dataclass
+class LoggingConfig:
+    level: str = "INFO"        # konsol seviyesi
+    file: bool = True          # logs/edgevision.log (dönen dosya)
+    file_level: str = "DEBUG"
+    dir: str = "logs"
+    max_mb: int = 5
+    backups: int = 3
+    telemetry: bool = False    # kare başına JSONL (analiz / ML veri seti)
+    telemetry_every: int = 1
 
 
 @dataclass
@@ -124,6 +150,10 @@ class TrackConfig:
     deadband_m: float = 0.06
     alpha_still: float = 0.12
     alpha_move: float = 0.60
+    # Sıçrama kapısı: bu oranı aşan tek-kare değişim hemen kabul edilmez,
+    # jump_persist kare tutarlı kalırsa gerçek hareket sayılır.
+    jump_ratio: float = 0.35
+    jump_persist: int = 3
 
 
 @dataclass
@@ -169,6 +199,8 @@ class AppConfig:
     avoidance: AvoidanceConfig = field(default_factory=AvoidanceConfig)
     smoothing: SmoothingConfig = field(default_factory=SmoothingConfig)
     ground: GroundConfig = field(default_factory=GroundConfig)
+    scene: SceneConfig = field(default_factory=SceneConfig)
+    logging: LoggingConfig = field(default_factory=LoggingConfig)
 
 
 def _build(cls, data: dict):
@@ -193,4 +225,6 @@ def load_config(path: Union[str, Path, None] = None) -> AppConfig:
         avoidance=_build(AvoidanceConfig, raw.get("avoidance")),
         smoothing=_build(SmoothingConfig, raw.get("smoothing")),
         ground=_build(GroundConfig, raw.get("ground")),
+        scene=_build(SceneConfig, raw.get("scene")),
+        logging=_build(LoggingConfig, raw.get("logging")),
     )
