@@ -19,10 +19,13 @@ import numpy as np
 
 from . import depth_color
 from .config import DepthConfig
+from .log import get_logger
 from .utils import require_model
 
 _IMAGENET_MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32)
 _IMAGENET_STD = np.array([0.229, 0.224, 0.225], dtype=np.float32)
+
+log = get_logger(__name__)
 
 
 class MetricDepthNet:
@@ -36,6 +39,10 @@ class MetricDepthNet:
         self.session = ort.InferenceSession(require_model(cfg.model), so,
                                             providers=providers)
         self.active_provider = self.session.get_providers()[0]
+        log.info("derinlik modeli: %s  saglayici=%s", cfg.model, self.active_provider)
+        if providers[0] != cfg.providers[0]:
+            log.warning("derinlik: istenen saglayici %s yok, %s kullaniliyor",
+                        cfg.providers[0], providers[0])
         self.input_name = self.session.get_inputs()[0].name
         self.backend = str(getattr(cfg, "backend", "dav2")).lower()
         # YOLO26 sabit girdiyle aktarılır (boyut oturumdan); DA V2'de 14'ün katı.
@@ -93,7 +100,15 @@ class MetricDepthNet:
             if frame is None:
                 time.sleep(0.002)
                 continue
-            depth_raw, depth = self._infer(frame)
+            try:
+                depth_raw, depth = self._infer(frame)
+            except Exception:                               # noqa: BLE001
+                # Tek bir hatali kare is parcacigini oldurmesin (harita donardi).
+                self._errors = getattr(self, "_errors", 0) + 1
+                if self._errors <= 3 or self._errors % 100 == 0:
+                    log.exception("derinlik cikarimi basarisiz (#%d)", self._errors)
+                time.sleep(0.05)
+                continue
             with self._lock:
                 self._depth_raw = depth_raw
                 self._depth_m = depth

@@ -82,6 +82,10 @@ tracking:
   deadband_m: 0.06
   alpha_still: 0.12
   alpha_move: 0.60
+  # Sicrama kapisi: tek karede %35'ten buyuk mesafe degisimi hemen kabul
+  # edilmez; 3 kare tutarli kalirsa gercek hareket sayilir.
+  jump_ratio: 0.35
+  jump_persist: 3
 
 # Kuresel olcek capasi. Model sahne degisince TUM haritayi yeniden olcekliyor:
 # olculdu, goruntunun HIC DEGISMEYEN yarisi %50 kaydi; capa bunu %15'e indiriyor.
@@ -93,6 +97,33 @@ stabilize:
   anchor_min: 0.30        # duzeltme katsayisi bu araligin disina cikamaz
   anchor_max: 3.00
   anchor_ema: 0.25        # ani sicrama yerine yumusak duzeltme
+  rebase_on_cut: true     # sahne kesmesinde referans yeni sahneye gore yeniden kurulur
+
+# Ani degisim algilama. Esikler ortama gore OGRENILIR (cevrimici EWMA z-skoru);
+# asagidakiler yalnizca sert sinirlar. Kararsiz karede olcek capasi guncellenmez,
+# iz mesafelerinde sicrama kapisi devrededir.
+scene:
+  enabled: true
+  light_jump: 0.15        # kareden kareye bagil parlaklik sicramasi
+  blur_ratio: 0.50        # keskinlik ogrenilen ortalamanin bu oranina duserse
+  cut_corr: 0.50          # yapisal benzerlik (NCC) bunun alti = farkli sahne
+  cut_persist: 6          # yeni sahne bu kadar kare tutarli kalmali (gecen el kesme degil)
+  z_max: 4.0
+  learn_rate: 0.02
+  settle_frames: 5
+
+# Loglama: konsol (stderr) + logs/edgevision.log. --json kipinde stdout temiz kalir.
+# telemetry: kare basina JSONL (logs/telemetry_*.jsonl) — ani degisimleri sonradan
+# incelemek / ML modeli egitmek icin veri. Komut satirindan: --telemetry
+logging:
+  level: INFO             # DEBUG | INFO | WARNING | ERROR
+  file: true
+  file_level: DEBUG
+  dir: logs
+  max_mb: 5
+  backups: 3
+  telemetry: false
+  telemetry_every: 1
 
 # El tanima (MediaPipe): COCO'da "el" sinifi yok, model eli "insan" sayiyor.
 # Acik sozluklu YOLOE ile de denendi, tutmadi: 503 karede "hand" icin en yuksek

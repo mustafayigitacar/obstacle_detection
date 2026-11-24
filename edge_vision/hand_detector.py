@@ -21,9 +21,12 @@ import cv2
 import numpy as np
 
 from .config import HandConfig
+from .log import get_logger
 from .object_detector import Detection
 
 HAND_CLASS_ID = -1          # COCO sinifi degil; izleyicide ayri kimlik olarak yeter
+
+log = get_logger(__name__)
 
 
 class HandDetector:
@@ -63,15 +66,15 @@ class HandDetector:
         if not cfg.enabled:
             return None
         if not Path(cfg.model).exists():
-            print(f"[el] model yok ({cfg.model}), el tanima kapali", flush=True)
+            log.warning("el: model yok (%s), el tanima kapali", cfg.model)
             return None
         try:
             return HandDetector(cfg)
         except ImportError:
-            print("[el] mediapipe kurulu degil (pip install mediapipe), "
-                  "el tanima kapali", flush=True)
+            log.warning("el: mediapipe kurulu degil (pip install mediapipe), "
+                        "el tanima kapali")
         except Exception as exc:                            # noqa: BLE001
-            print(f"[el] baslatilamadi: {exc}", flush=True)
+            log.exception("el: baslatilamadi: %s", exc)
         return None
 
     # --- arka plan is parcacigi ---
@@ -93,7 +96,15 @@ class HandDetector:
             if frame is None:
                 time.sleep(0.002)
                 continue
-            dets = self._infer(frame)
+            try:
+                dets = self._infer(frame)
+            except Exception:                               # noqa: BLE001
+                # Tek bir hatali kare is parcacigini oldurmesin (harita donardi).
+                self._errors = getattr(self, "_errors", 0) + 1
+                if self._errors <= 3 or self._errors % 100 == 0:
+                    log.exception("el cikarimi basarisiz (#%d)", self._errors)
+                time.sleep(0.05)
+                continue
             with self._lock:
                 self._dets = dets
                 self._version += 1

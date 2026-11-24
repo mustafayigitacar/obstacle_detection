@@ -21,6 +21,9 @@ from pathlib import Path
 import numpy as np
 
 from edge_vision import ThreadedCamera, VisionPipeline, load_config
+from edge_vision.log import Telemetry, get_logger, setup_logging
+
+log = get_logger("main")
 
 
 def parse_args() -> argparse.Namespace:
@@ -32,6 +35,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--json", action="store_true", help="Kare başına JSON (stdout)")
     p.add_argument("--scale", type=int, default=2, help="Pencere büyütme çarpanı")
     p.add_argument("--max-frames", type=int, default=0)
+    p.add_argument("--log-level", default=None,
+                   help="Konsol log seviyesi: DEBUG|INFO|WARNING|ERROR (config'i ezer)")
+    p.add_argument("--telemetry", action="store_true",
+                   help="Kare basina JSONL telemetri (logs/telemetry_*.jsonl)")
     return p.parse_args()
 
 
@@ -40,8 +47,18 @@ def main() -> int:
     cfg = load_config(args.config if Path(args.config).exists() else None)
     if args.source is not None:
         cfg.camera.source = int(args.source) if args.source.isdigit() else args.source
+    if args.telemetry:
+        cfg.logging.telemetry = True
+    setup_logging(cfg.logging, args.log_level)
+    log.info("EdgeVision basliyor (config=%s)", args.config)
 
-    pipeline = VisionPipeline(cfg).start()
+    try:
+        pipeline = VisionPipeline(cfg).start()
+    except Exception:
+        log.exception("hat kurulamadi")
+        return 1
+    telemetry = Telemetry(cfg.logging)
+    last_action = None
     display = args.display or not (args.headless or args.json)
 
     win = "EdgeVision  [q=cikis  s=kaydet  d=panel  c=kalibrasyon  tik=mesafe]"
@@ -69,8 +86,8 @@ def main() -> int:
     processed = 0
     last_id = -1
     last_status = 0.0
-    print(f"Kamera aciliyor (kaynak={cfg.camera.source!r})...", file=sys.stderr)
-    print("Metrik derinlik agi arka planda isiniyor (ilk harita ~1 sn)...", file=sys.stderr)
+    log.info("kamera aciliyor (kaynak=%r)...", cfg.camera.source)
+    log.info("metrik derinlik agi arka planda isiniyor (ilk harita ~1 sn)...")
     with ThreadedCamera(cfg.camera.source, cfg.camera.capture_width,
                         cfg.camera.capture_height, cfg.camera.fps) as cam:
         t_start = time.perf_counter()
@@ -81,19 +98,30 @@ def main() -> int:
                     if isinstance(cfg.camera.source, str):
                         break
                     if processed == 0 and time.perf_counter() - t_start > 10.0:
-                        print("HATA: kameradan kare gelmedi.", file=sys.stderr)
+                        log.error("kameradan kare gelmedi (10 sn)")
+                        pipeline.stop()
+                        telemetry.close()
                         return 1
                     time.sleep(0.005); continue
                 if frame_id == last_id:
                     time.sleep(0.002); continue
                 last_id = frame_id
                 if processed == 0:
-                    print("Kamera hazir." + (" Pencere: q=cikis." if display else " Cikis: Ctrl+C."),
-                          file=sys.stderr)
+                    log.info("kamera hazir. %s",
+                             "Pencere: q=cikis." if display else "Cikis: Ctrl+C.")
 
                 report, command, dbg = pipeline.process(
                     frame_id, frame, want_edges=display and right_panel == "edges")
                 processed += 1
+
+                if command.action != last_action:
+                    n = report.nearest
+                    log.info("komut: %s -> %s%s", last_action, command.action,
+                             "" if n is None else
+                             f"  (engel {n.distance_m:.2f} m @ {n.bearing_deg:+.0f} derece)")
+                    last_action = command.action
+                if telemetry.enabled:
+                    telemetry.write(pipeline.telemetry_record(report, command, dbg["fps"]))
 
                 if args.json:
                     print(json.dumps({"command": command.to_dict(), **report.to_dict()}),
@@ -110,10 +138,12 @@ def main() -> int:
                         y = dbg["yolo"]
                         ytxt = "" if y is None else \
                             f" yolo={y.update_rate:.0f}fps({y.infer_ms:.0f}ms)"
-                        print(f"[{command.action:9s}] engel={eng:18s} nesne={nes:20s} "
-                              f"fps={dbg['fps']:.1f} "
-                              f"derinlik={d.update_rate:.0f}fps({d.infer_ms:.0f}ms){ytxt}",
-                              flush=True)
+                        sc = dbg["scene"]
+                        stxt = "" if sc.stable else f" sahne={','.join(sc.events) or 'oturuyor'}"
+                        log.info("[%-9s] engel=%-18s nesne=%-20s fps=%.1f "
+                                 "derinlik=%.0ffps(%.0fms)%s k=%.2f%s",
+                                 command.action, eng, nes, dbg["fps"],
+                                 d.update_rate, d.infer_ms, ytxt, dbg["scale_k"], stxt)
 
                 if display:
                     if calib.active:
@@ -170,17 +200,23 @@ def main() -> int:
                     elif key == ord("s"):
                         cap_dir = Path("captures"); cap_dir.mkdir(exist_ok=True)
                         cv2.imwrite(str(cap_dir / f"frame_{frame_id:06d}.png"), view)
-                        print(f"Kaydedildi: captures/frame_{frame_id:06d}.png", file=sys.stderr)
+                        log.info("kaydedildi: captures/frame_%06d.png", frame_id)
                 if args.max_frames and processed >= args.max_frames:
                     break
         except KeyboardInterrupt:
-            pass
+            log.info("Ctrl+C ile durduruldu")
+        except Exception:
+            log.exception("ana dongude beklenmeyen hata (kare %d)", processed)
+            pipeline.stop()
+            telemetry.close()
+            raise
 
     pipeline.stop()
+    telemetry.close()
     if display:
         import cv2
         cv2.destroyAllWindows()
-    print(f"Islenen kare: {processed}", file=sys.stderr)
+    log.info("islenen kare: %d  sahne kesmesi: %d", processed, pipeline.scene.n_cuts)
     return 0
 
 

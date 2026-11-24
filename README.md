@@ -304,6 +304,48 @@ Cismin **gerçek** yaklaşması arka planı değiştirmediği için bastırılma
 
 ---
 
+### `edge_vision/stability.py` — Ani değişimler (ışık, bulanıklık, sahne kesmesi)
+
+Derinlik ağı ve YOLO her kareyi bağımsız yorumlar; görüntü bir anda değişince
+çıktılar da bir anda kayar. `SceneMonitor` her karede 80x60 gri görüntüden
+(<0.5 ms) şu olayları çıkarır:
+
+| Olay | Ölçüt | Hattın tepkisi |
+|------|-------|----------------|
+| `isik` | kareden kareye bağıl parlaklık > `light_jump` ya da z > `z_max` | ölçek çapası güncellenmez |
+| `bulanik` | keskinlik < `blur_ratio` × öğrenilen ortalama | ölçek çapası güncellenmez |
+| `sarsinti` | parlaklıktan bağımsız kare farkı z > `z_max` | iz mesafesi kapısı 2 kat sabırlı |
+| `degisim` | yapısal benzerlik (NCC) < `cut_corr` | aday sahne sayılır |
+| `kesme` | yeni sahne `cut_persist` kare tutarlı | ölçek çapası referansı yeni sahneye göre yeniden kurulur |
+
+Eşikler sabit değildir: her öznitelik için çevrimiçi EWMA ortalama/varyans
+öğrenilir (denetimsiz, çevrimiçi anomali tespiti), z-skoru o ortamın kendi
+gürültüsüne göre hesaplanır. Olaydan sonra `settle_frames` kare boyunca sahne
+"kararsız" sayılır. Kameranın önünden geçen el gibi kısa örtmeler kesme sayılmaz.
+
+**Sıçrama kapısı** (`DetectionTracker.set_distance`): bir izin mesafesi tek
+karede `jump_ratio`'dan (%35) fazla değişirse hemen kabul edilmez; yeni değer
+`jump_persist` kare tutarlı kalırsa gerçek hareket sayılıp doğrudan atanır.
+Kaçınma komutunu üreten sütun taraması bu kapıdan GEÇMEZ — yaklaşan engel
+güvenlik için gecikmesiz görülür.
+
+### `edge_vision/log.py` — Loglama ve telemetri
+
+Tüm modüller `edge_vision.*` logger'larına yazar: konsol (stderr) + dönen
+dosya `logs/edgevision.log`. `--json` kipinde stdout temiz kalır. Arka plan iş
+parçacıkları (derinlik/YOLO/el) hata verince artık ölmez: hata loglanır,
+döngü devam eder.
+
+```powershell
+python main.py --headless --log-level DEBUG --telemetry
+```
+
+`--telemetry` kare başına bir JSONL satırı yazar (`logs/telemetry_*.jsonl`):
+sahne öznitelikleri, olaylar, ham derinlik medyanı ve sıçraması, çapa
+katsayısı, en yakın engel/nesne. Ani değişim sorunlarını sonradan incelemek
+ve gerekirse denetimli bir model (ör. ölçek düzeltmesini öğrenen bir
+regresör) eğitmek için veri setidir.
+
 ### `edge_vision/ground.py` — Zemin düzlemi ayıklama
 
 **`GroundRemover`**
