@@ -115,6 +115,7 @@ class VisionPipeline:
         self._depth_jump = 0.0
         self._yolo_version = -1
         self._hand_version = -1
+        self._depth_stale = False
 
         self.smoother = None
         if cfg.smoothing.enabled:
@@ -184,13 +185,16 @@ class VisionPipeline:
 
         if depth_m is None:
             # Derinlik gelmeden de etiketler görünür; mesafe harita gelince dolar.
+            # GÜVENLİK: tarama tamamen "inf" olurdu ve planlayıcı bunu "yol açık"
+            # (CLEAR) sayardı. Harita yokken hareket komutu verilmez.
             dets, _ = self._detect(None, None)
             u = np.arange(0, self.pw, self.cfg.processing.column_stride, dtype=np.intp)
             z = np.full(len(u), np.inf, dtype=np.float32)
             report = ObstacleReport(frame_id=frame_id, scan_u=u, scan_z=z,
                                     scan_bearing_deg=np.zeros(len(u), np.float32),
                                     detections=dets)
-            command = self.planner.plan(report)
+            command = AvoidanceCommand("STOP", 0.0, 0.0, float("inf"),
+                                       "derinlik haritasi bekleniyor")
             return report, command, self._debug(proc, edges, depth_m, roi_top)
 
         if depth_new or self._ground_mask is None:
@@ -235,14 +239,36 @@ class VisionPipeline:
             x = np.where(fg_mask, x, 0.0).astype(np.float32)
         obstacles = foreground
 
-        nearest = min(obstacles, key=lambda o: o.distance_m) if obstacles else None
+        nearest = obstacles[0] if obstacles else None   # zaten mesafeye göre sıralı
         report = ObstacleReport(
             frame_id=frame_id, obstacles=obstacles, nearest=nearest,
             scan_bearing_deg=bearing, scan_z=z, scan_u=u,
             detections=detections, nearest_named=nearest_named,
         )
-        command = self.planner.plan(report)
+        command = self._guard_stale(self.planner.plan(report))
         return report, command, self._debug(proc, edges, depth_m, roi_top)
+
+    def _guard_stale(self, command: AvoidanceCommand) -> AvoidanceCommand:
+        """Derinlik ağı takıldıysa/çöktüyse son harita sonsuza dek kullanılmaz.
+
+        Ana döngü kamera hızında dönmeye devam eder; ağ yayın yapmayı keserse
+        eski haritayla "yol açık" demek tehlikelidir. `max_age_s` aşılınca STOP.
+        """
+        max_age = float(getattr(self.cfg.depth, "max_age_s", 0.0) or 0.0)
+        if max_age <= 0:
+            return command
+        age = self.depth.age_s
+        stale = age > max_age
+        if stale != self._depth_stale:
+            if stale:
+                log.warning("derinlik: harita %.1f sn bayat, komut STOP'a zorlandi", age)
+            else:
+                log.info("derinlik: harita yeniden taze")
+            self._depth_stale = stale
+        if not stale:
+            return command
+        return AvoidanceCommand("STOP", 0.0, 0.0, command.nearest_m,
+                                f"derinlik haritasi bayat ({age:.1f} sn)")
 
     def _track_depth_jump(self, raw: Optional[np.ndarray]) -> None:
         """Ham haritanın küresel medyanındaki kareden kareye log-sıçrama.

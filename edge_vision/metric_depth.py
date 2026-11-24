@@ -76,6 +76,7 @@ class MetricDepthNet:
         self._update_rate = 0.0
         self._last_pub = 0.0
         self._version = 0
+        self._errors = 0
 
         # Kilitler kurulduktan SONRA çağrılmalı: _lock kullanır.
         self.set_calibration_table(cfg.calib_points)
@@ -95,7 +96,7 @@ class MetricDepthNet:
     def _loop(self) -> None:
         while not self._stopped:
             with self._frame_lock:
-                frame = None if self._latest_frame is None else self._latest_frame
+                frame = self._latest_frame
                 self._latest_frame = None
             if frame is None:
                 time.sleep(0.002)
@@ -104,7 +105,7 @@ class MetricDepthNet:
                 depth_raw, depth = self._infer(frame)
             except Exception:                               # noqa: BLE001
                 # Tek bir hatali kare is parcacigini oldurmesin (harita donardi).
-                self._errors = getattr(self, "_errors", 0) + 1
+                self._errors += 1
                 if self._errors <= 3 or self._errors % 100 == 0:
                     log.exception("derinlik cikarimi basarisiz (#%d)", self._errors)
                 time.sleep(0.05)
@@ -167,7 +168,8 @@ class MetricDepthNet:
 
     @property
     def table_size(self) -> int:
-        return 0 if self._table is None else int(self._table[0].size)
+        tbl = self._table
+        return 0 if tbl is None else int(tbl[0].size)
 
     def get_calibration_table(self) -> list:
         with self._lock:
@@ -210,6 +212,12 @@ class MetricDepthNet:
     def infer_ms(self) -> float:
         return self._infer_ms
 
+    @property
+    def age_s(self) -> float:
+        """Son yayınlanan haritanın yaşı (sn); henüz harita yoksa 0."""
+        last = self._last_pub
+        return 0.0 if not last else time.perf_counter() - last
+
     def get_depth(self) -> Optional[np.ndarray]:
         with self._lock:
             return None if self._depth_m is None else self._depth_m.copy()
@@ -237,9 +245,10 @@ class MetricDepthNet:
 
         valid = depth_m[depth_m > 1e-3]
         if valid.size:
-            if self._table is not None:
-                ys = self._table[1]
-                kind = f"tablo({self.table_size}) {ys[0]:.2f}-{ys[-1]:.2f}m"
+            tbl = self._table     # kalibrasyon başka iş parçacığından değişebilir
+            if tbl is not None:
+                ys = tbl[1]
+                kind = f"tablo({ys.size}) {ys[0]:.2f}-{ys[-1]:.2f}m"
             else:
                 kind = "afin"
             cv2.putText(vis, f"harita en yakin: {float(valid.min()):.2f} m  kalib: {kind}",

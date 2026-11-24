@@ -44,22 +44,46 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
-    cfg = load_config(args.config if Path(args.config).exists() else None)
+    cfg_found = Path(args.config).exists()
+    cfg = load_config(args.config if cfg_found else None)
     if args.source is not None:
         cfg.camera.source = int(args.source) if args.source.isdigit() else args.source
     if args.telemetry:
         cfg.logging.telemetry = True
     setup_logging(cfg.logging, args.log_level)
     log.info("EdgeVision basliyor (config=%s)", args.config)
+    if not cfg_found:
+        log.warning("config dosyasi yok (%s): varsayilan degerler kullaniliyor, "
+                    "kalibrasyon kaydedilemez", args.config)
+    if args.scale < 1:
+        log.warning("--scale %d gecersiz, 1 kullaniliyor", args.scale)
+        args.scale = 1
 
     try:
         pipeline = VisionPipeline(cfg).start()
     except Exception:
         log.exception("hat kurulamadi")
         return 1
+    try:
+        return _run(args, cfg, pipeline)
+    finally:
+        pipeline.stop()
+
+
+def _run(args, cfg, pipeline) -> int:
     telemetry = Telemetry(cfg.logging)
-    last_action = None
     display = args.display or not (args.headless or args.json)
+    try:
+        return _loop(args, cfg, pipeline, telemetry, display)
+    finally:
+        telemetry.close()
+        if display:
+            import cv2
+            cv2.destroyAllWindows()
+
+
+def _loop(args, cfg, pipeline, telemetry, display) -> int:
+    last_action = None
 
     win = "EdgeVision  [q=cikis  s=kaydet  d=panel  c=kalibrasyon  tik=mesafe]"
     probe = {"uv": None, "at": 0.0, "ema": None}
@@ -86,25 +110,46 @@ def main() -> int:
     processed = 0
     last_id = -1
     last_status = 0.0
+    cam_stalled = False
     log.info("kamera aciliyor (kaynak=%r)...", cfg.camera.source)
     log.info("metrik derinlik agi arka planda isiniyor (ilk harita ~1 sn)...")
-    with ThreadedCamera(cfg.camera.source, cfg.camera.capture_width,
-                        cfg.camera.capture_height, cfg.camera.fps) as cam:
+    try:
+        cam = ThreadedCamera(cfg.camera.source, cfg.camera.capture_width,
+                             cfg.camera.capture_height, cfg.camera.fps)
+    except RuntimeError as exc:
+        log.error("%s", exc)
+        return 1
+    with cam:
         t_start = time.perf_counter()
         try:
             while True:
                 frame_id, frame = cam.read()
                 if frame is None:
-                    if isinstance(cfg.camera.source, str):
+                    # Yalnızca yerel dosyada None = akışın sonu. RTSP/HTTP
+                    # akışı (str ama dosya değil) ilk kareleri geç verebilir;
+                    # eskiden burada hemen çıkılıyordu.
+                    if cam.is_file:
                         break
                     if processed == 0 and time.perf_counter() - t_start > 10.0:
                         log.error("kameradan kare gelmedi (10 sn)")
-                        pipeline.stop()
-                        telemetry.close()
                         return 1
                     time.sleep(0.005); continue
                 if frame_id == last_id:
+                    # Canlı kamera koptu: son kare kopyalanmaya devam eder ama
+                    # kimliği artmaz. Robot köprüsü sessizce eski komutla
+                    # kalmasın — bir kez STOP yayınlanır.
+                    if not cam_stalled and cam.age_s > 2.0:
+                        cam_stalled = True
+                        log.error("kamera: %.1f sn'dir yeni kare yok", cam.age_s)
+                        if args.json:
+                            print(json.dumps({"command": {
+                                "action": "STOP", "steer_deg": 0.0, "speed_scale": 0.0,
+                                "nearest_m": None, "reason": "kamera akisi durdu"}}),
+                                flush=True)
                     time.sleep(0.002); continue
+                if cam_stalled:
+                    log.info("kamera: yeni kareler geliyor")
+                    cam_stalled = False
                 last_id = frame_id
                 if processed == 0:
                     log.info("kamera hazir. %s",
@@ -207,15 +252,8 @@ def main() -> int:
             log.info("Ctrl+C ile durduruldu")
         except Exception:
             log.exception("ana dongude beklenmeyen hata (kare %d)", processed)
-            pipeline.stop()
-            telemetry.close()
             raise
 
-    pipeline.stop()
-    telemetry.close()
-    if display:
-        import cv2
-        cv2.destroyAllWindows()
     log.info("islenen kare: %d  sahne kesmesi: %d", processed, pipeline.scene.n_cuts)
     return 0
 

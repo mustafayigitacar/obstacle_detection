@@ -59,6 +59,7 @@ class HandDetector:
         self._update_rate = 0.0
         self._last_pub = 0.0
         self._version = 0
+        self._errors = 0
 
     @staticmethod
     def create(cfg: HandConfig) -> Optional["HandDetector"]:
@@ -100,7 +101,7 @@ class HandDetector:
                 dets = self._infer(frame)
             except Exception:                               # noqa: BLE001
                 # Tek bir hatali kare is parcacigini oldurmesin (harita donardi).
-                self._errors = getattr(self, "_errors", 0) + 1
+                self._errors += 1
                 if self._errors <= 3 or self._errors % 100 == 0:
                     log.exception("el cikarimi basarisiz (#%d)", self._errors)
                 time.sleep(0.05)
